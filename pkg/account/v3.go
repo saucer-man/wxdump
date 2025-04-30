@@ -12,7 +12,6 @@ import (
 	"sync"
 	"unsafe"
 
-	"github.com/rs/zerolog/log"
 	"github.com/saucer-man/wxdump/pkg/utils"
 	"github.com/sirupsen/logrus"
 
@@ -626,7 +625,7 @@ func (a *Account) GetKeyV3(ctx context.Context) error {
 	if workerCount > MaxWorkers {
 		workerCount = MaxWorkers
 	}
-	log.Debug().Msgf("Starting %d workers for V3 key search", workerCount)
+	logrus.Debugf("Starting %d workers for V3 key search", workerCount)
 
 	// Start consumer goroutines
 	var workerWaitGroup sync.WaitGroup
@@ -646,7 +645,7 @@ func (a *Account) GetKeyV3(ctx context.Context) error {
 		defer close(memoryChannel) // Close channel when producer is done
 		err := a.findMemoryV3(searchCtx, handle, a.PID, memoryChannel)
 		if err != nil {
-			log.Err(err).Msg("Failed to find memory regions")
+			logrus.Error("Failed to find memory regions")
 		}
 	}()
 
@@ -712,7 +711,7 @@ func (a *Account) findMemoryV3(ctx context.Context, handle windows.Handle, pid u
 			if err = windows.ReadProcessMemory(handle, currentAddr, &memory[0], regionSize, nil); err == nil {
 				select {
 				case memoryChannel <- memory:
-					log.Debug().Msgf("Memory region: 0x%X - 0x%X, size: %d bytes", currentAddr, currentAddr+regionSize, regionSize)
+					logrus.Debugf("Memory region: 0x%X - 0x%X, size: %d bytes", currentAddr, currentAddr+regionSize, regionSize)
 				case <-ctx.Done():
 					return nil
 				}
@@ -769,7 +768,7 @@ func (a *Account) workerV3(ctx context.Context, handle windows.Handle, is64Bit b
 					if key := a.validateKey(handle, ptrValue); key != "" {
 						select {
 						case resultChannel <- key:
-							log.Debug().Msg("Valid key found: " + key)
+							logrus.Debug("Valid key found: " + key)
 							return
 						default:
 						}
@@ -786,7 +785,7 @@ func FindModule(pid uint32, name string) (module windows.ModuleEntry32, isFound 
 	// Create module snapshot
 	snapshot, err := windows.CreateToolhelp32Snapshot(windows.TH32CS_SNAPMODULE|windows.TH32CS_SNAPMODULE32, pid)
 	if err != nil {
-		log.Debug().Msgf("Failed to create module snapshot for PID %d: %v", pid, err)
+		logrus.Debugf("Failed to create module snapshot for PID %d: %v", pid, err)
 		return module, false
 	}
 	defer windows.CloseHandle(snapshot)
@@ -796,7 +795,7 @@ func FindModule(pid uint32, name string) (module windows.ModuleEntry32, isFound 
 
 	// Get the first module
 	if err := windows.Module32First(snapshot, &module); err != nil {
-		log.Debug().Msgf("Module32First failed for PID %d: %v", pid, err)
+		logrus.Debugf("Module32First failed for PID %d: %v", pid, err)
 		return module, false
 	}
 
