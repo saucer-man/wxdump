@@ -50,7 +50,7 @@ func initializeProcessInfo(p *process.Process, info *model.Process) error {
 				info.Wxid = HandleWxidV4(parts[len(parts)-4])
 			} else {
 				info.DataDir = strings.Join(parts[:len(parts)-2], string(filepath.Separator))
-				info.Wxid = HandleWxidV4(parts[len(parts)-3])
+				info.Wxid = parts[len(parts)-3]
 			}
 			return nil
 		}

@@ -16,7 +16,7 @@ func main() {
 	for _, account := range accounts {
 		// 这里压缩微信数据
 		logrus.Infof("try to zip account dir:%+v", account.DataDir)
-		err := account.ZipWeChatUserData("D:\\test", false)
+		err := account.ZipWeChatUserData("D:\\", false)
 		if err != nil {
 			logrus.Infof("account.ZipWeChatUserData error:%+v", err)
 		}

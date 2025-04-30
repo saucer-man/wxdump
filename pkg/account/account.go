@@ -28,6 +28,7 @@ type Account struct {
 	PID         uint32
 	ExePath     string
 	Status      string
+	ZipPath     string
 	Validator   *decrypt.Validator
 }
 
@@ -117,8 +118,10 @@ func (a *Account) ZipWeChatUserData(savePath string, isSure bool) error {
 		}
 
 	}
+
 	// 创建zip文件
-	zipFile, err := os.Create(filepath.Join(savePath, fmt.Sprintf("%s.zip", a.Wxid)))
+	zipPath := filepath.Join(savePath, fmt.Sprintf("%s.zip", a.Wxid))
+	zipFile, err := os.Create(zipPath)
 	if err != nil {
 		return fmt.Errorf("failed to create zip file: %v", err)
 	}
@@ -172,5 +175,6 @@ func (a *Account) ZipWeChatUserData(savePath string, isSure bool) error {
 		return fmt.Errorf("failed to walk directory: %v", err)
 	}
 	logrus.Infof("Successful zipped WeChat user data for %s to %s", a.Wxid, zipFile.Name())
+	a.ZipPath = zipPath
 	return nil
 }
