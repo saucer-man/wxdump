@@ -80,10 +80,7 @@ func GetWexinList() []*Account {
 		accounts = append(accounts, a)
 
 	}
-	// for _, account := range accounts {
-	// 	bytes, _ := json.MarshalIndent(account, "", "  ")
-	// 	fmt.Println(string(bytes))
-	// }
+	return accounts
 
 	// 这里再读取一遍微信的目录，将离线的账号都也加到账号里面
 	for _, weChatDir := range getWeChatDir() {
