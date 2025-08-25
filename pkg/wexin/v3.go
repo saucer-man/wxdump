@@ -1,18 +1,13 @@
-package account
+package wexin
 
 import (
-	"bytes"
 	"context"
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"runtime"
 	"strings"
-	"sync"
-	"unsafe"
 
-	"github.com/saucer-man/wxdump/pkg/utils"
 	"github.com/sirupsen/logrus"
 
 	"golang.org/x/sys/windows"
@@ -549,6 +544,8 @@ func (a *Account) GetUserInfoV3(ctx context.Context) error {
 	logrus.Infof("get key:%+v\n", a.Key)
 	return nil
 }
+
+// 从指定内存位置，读取key
 func GetWeChatKey(processHandler windows.Handle, address uintptr, addressLen int) ([]byte, error) {
 	array := make([]byte, addressLen)
 
@@ -593,191 +590,6 @@ func GetWeChatData(process windows.Handle, offset uintptr, nSize int) (string, e
 	}
 	// 返回utf8编码的字符串
 	return string(textBytes), nil
-}
-func (a *Account) GetKeyV3(ctx context.Context) error {
-
-	// Open WeChat process
-	handle, err := windows.OpenProcess(windows.PROCESS_QUERY_INFORMATION|windows.PROCESS_VM_READ, false, a.PID)
-	if err != nil {
-		return fmt.Errorf("OpenProcess fail")
-	}
-	defer windows.CloseHandle(handle)
-
-	// Check process architecture
-	is64Bit, err := utils.Is64Bit(handle)
-	if err != nil {
-		return err
-	}
-
-	// Create context to control all goroutines
-	searchCtx, cancel := context.WithCancel(ctx)
-	defer cancel()
-
-	// Create channels for memory data and results
-	memoryChannel := make(chan []byte, 100)
-	resultChannel := make(chan string, 1)
-
-	// Determine number of worker goroutines
-	workerCount := runtime.NumCPU()
-	if workerCount < 2 {
-		workerCount = 2
-	}
-	if workerCount > MaxWorkers {
-		workerCount = MaxWorkers
-	}
-	logrus.Debugf("Starting %d workers for V3 key search", workerCount)
-
-	// Start consumer goroutines
-	var workerWaitGroup sync.WaitGroup
-	workerWaitGroup.Add(workerCount)
-	for index := 0; index < workerCount; index++ {
-		go func() {
-			defer workerWaitGroup.Done()
-			a.workerV3(searchCtx, handle, is64Bit, memoryChannel, resultChannel)
-		}()
-	}
-
-	// Start producer goroutine
-	var producerWaitGroup sync.WaitGroup
-	producerWaitGroup.Add(1)
-	go func() {
-		defer producerWaitGroup.Done()
-		defer close(memoryChannel) // Close channel when producer is done
-		err := a.findMemoryV3(searchCtx, handle, a.PID, memoryChannel)
-		if err != nil {
-			logrus.Error("Failed to find memory regions")
-		}
-	}()
-
-	// Wait for producer and consumers to complete
-	go func() {
-		producerWaitGroup.Wait()
-		workerWaitGroup.Wait()
-		close(resultChannel)
-	}()
-
-	// Wait for result
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case result, ok := <-resultChannel:
-		if ok && result != "" {
-			a.Key = result
-			return nil
-		}
-	}
-	logrus.Info("GetKeyV3 cant find correct key")
-	return nil
-}
-
-// findMemoryV3 searches for writable memory regions in WeChatWin.dll for V3 version
-func (a *Account) findMemoryV3(ctx context.Context, handle windows.Handle, pid uint32, memoryChannel chan<- []byte) error {
-	// Find WeChatWin.dll module
-	module, isFound := FindModule(pid, V3ModuleName)
-	if !isFound {
-		return fmt.Errorf("FindModule cant find WeChatWin.dll")
-	}
-	logrus.Debug("found WeChatWin.dll module at base address: 0x" + fmt.Sprintf("%X", module.ModBaseAddr))
-
-	// Read writable memory regions
-	baseAddr := uintptr(module.ModBaseAddr)
-	endAddr := baseAddr + uintptr(module.ModBaseSize)
-	currentAddr := baseAddr
-
-	for currentAddr < endAddr {
-		var mbi windows.MemoryBasicInformation
-		err := windows.VirtualQueryEx(handle, currentAddr, &mbi, unsafe.Sizeof(mbi))
-		if err != nil {
-			break
-		}
-
-		// Skip small memory regions
-		if mbi.RegionSize < 100*1024 {
-			currentAddr += uintptr(mbi.RegionSize)
-			continue
-		}
-
-		// Check if memory region is writable
-		isWritable := (mbi.Protect & (windows.PAGE_READWRITE | windows.PAGE_WRITECOPY | windows.PAGE_EXECUTE_READWRITE | windows.PAGE_EXECUTE_WRITECOPY)) > 0
-		if isWritable && uint32(mbi.State) == windows.MEM_COMMIT {
-			// Calculate region size, ensure it doesn't exceed DLL bounds
-			regionSize := uintptr(mbi.RegionSize)
-			if currentAddr+regionSize > endAddr {
-				regionSize = endAddr - currentAddr
-			}
-
-			// Read writable memory region
-			memory := make([]byte, regionSize)
-			if err = windows.ReadProcessMemory(handle, currentAddr, &memory[0], regionSize, nil); err == nil {
-				select {
-				case memoryChannel <- memory:
-					logrus.Debugf("Memory region: 0x%X - 0x%X, size: %d bytes", currentAddr, currentAddr+regionSize, regionSize)
-				case <-ctx.Done():
-					return nil
-				}
-			}
-		}
-
-		// Move to next memory region
-		currentAddr = uintptr(mbi.BaseAddress) + uintptr(mbi.RegionSize)
-	}
-
-	return nil
-}
-
-// workerV3 processes memory regions to find V3 version key
-func (a *Account) workerV3(ctx context.Context, handle windows.Handle, is64Bit bool, memoryChannel <-chan []byte, resultChannel chan<- string) {
-	// Define search pattern
-	keyPattern := []byte{0x20, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}
-	ptrSize := 8
-	littleEndianFunc := binary.LittleEndian.Uint64
-
-	// Adjust for 32-bit process
-	if !is64Bit {
-		keyPattern = keyPattern[:4]
-		ptrSize = 4
-		littleEndianFunc = func(b []byte) uint64 { return uint64(binary.LittleEndian.Uint32(b)) }
-	}
-
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case memory, ok := <-memoryChannel:
-			if !ok {
-				return
-			}
-
-			index := len(memory)
-			for {
-				select {
-				case <-ctx.Done():
-					return // Exit if context cancelled
-				default:
-				}
-
-				// Find pattern from end to beginning
-				index = bytes.LastIndex(memory[:index], keyPattern)
-				if index == -1 || index-ptrSize < 0 {
-					break
-				}
-
-				// Extract and validate pointer value
-				ptrValue := littleEndianFunc(memory[index-ptrSize : index])
-				if ptrValue > 0x10000 && ptrValue < 0x7FFFFFFFFFFF {
-					if key := a.validateKey(handle, ptrValue); key != "" {
-						select {
-						case resultChannel <- key:
-							logrus.Debug("Valid key found: " + key)
-							return
-						default:
-						}
-					}
-				}
-				index -= 1 // Continue searching from previous position
-			}
-		}
-	}
 }
 
 // FindModule searches for a specified module in the process

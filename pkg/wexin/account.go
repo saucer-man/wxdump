@@ -1,4 +1,4 @@
-package account
+package wexin
 
 import (
 	"archive/zip"
@@ -10,9 +10,22 @@ import (
 	"strings"
 	"time"
 
-	"github.com/saucer-man/wxdump/pkg/decrypt"
-	"github.com/saucer-man/wxdump/pkg/model"
+	"github.com/saucer-man/wxdump/pkg/utils"
+
 	"github.com/sirupsen/logrus"
+)
+
+const (
+	StatusInit    = ""
+	StatusOffline = "offline"
+	StatusOnline  = "online"
+)
+
+const (
+	V3ProcessName = "WeChat"
+	V4ProcessName = "Weixin"
+	V3DBFile      = "Msg\\Misc.db"
+	V4DBFile      = "db_storage\\message\\message_0.db"
 )
 
 // Account 表示一个微信账号
@@ -25,24 +38,76 @@ type Account struct {
 	FullVersion string
 	DataDir     string
 	Key         string
+	ImageXorKey string
+	ImageAesKey string
 	PID         uint32
 	ExePath     string
 	Status      string
 	ZipPath     string
-	Validator   *decrypt.Validator
+}
+
+// 微信4的目录名不是wxid，而是 wxid_xxxxx_786d == > wxid_xxxxx
+func HandleWxidV4(wxid string) string {
+
+	// 找到最后一个下划线的位置
+	idx := strings.LastIndex(wxid, "_")
+	if idx != -1 {
+		wxid = wxid[:idx] // 截取到最后一个下划线之前
+	}
+	return wxid
+
 }
 
 // NewAccount 创建新的账号对象
-func NewAccount(proc *model.Process) *Account {
-	return &Account{
-		Wxid:        proc.Wxid,
+func NewAccount(proc *utils.MyProcess) *Account {
+	account := &Account{
 		Version:     proc.Version,
 		FullVersion: proc.FullVersion,
-		DataDir:     proc.DataDir,
 		PID:         proc.PID,
 		ExePath:     proc.ExePath,
-		Status:      proc.Status,
+		Status:      StatusOffline,
 	}
+
+	// 初始化附加信息（DataDir、Wxid、Status）
+	account.initializeProcessInfo(proc)
+	return account
+}
+
+// initializeProcessInfo 获取进程的数据目录和账户名
+func (a *Account) initializeProcessInfo(proc *utils.MyProcess) error {
+	files, err := proc.P.OpenFiles()
+	if err != nil {
+		logrus.Infof("获取进程 %d 的打开文件失败", a.PID)
+		return err
+	}
+
+	dbPath := V3DBFile
+	if a.Version == 4 {
+		dbPath = V4DBFile
+	}
+
+	for _, f := range files {
+		if strings.HasSuffix(f.Path, dbPath) {
+			filePath := f.Path[4:] // 移除 "\\?\" 前缀
+			parts := strings.Split(filePath, string(filepath.Separator))
+			if len(parts) < 4 {
+				logrus.Info("无效的文件路径: " + filePath)
+				continue
+			}
+
+			a.Status = StatusOnline
+			if a.Version == 4 {
+				a.DataDir = strings.Join(parts[:len(parts)-3], string(filepath.Separator))
+				a.Wxid = HandleWxidV4(parts[len(parts)-4])
+			} else {
+				a.DataDir = strings.Join(parts[:len(parts)-2], string(filepath.Separator))
+				a.Wxid = parts[len(parts)-3]
+			}
+			return nil
+		}
+	}
+
+	return nil
 }
 
 // GetKey 获取账号的密钥
@@ -53,33 +118,24 @@ func (a *Account) GetUserInfo(ctx context.Context) error {
 	}
 
 	// 检查账号状态
-	if a.Status != model.StatusOnline {
+	if a.Status != StatusOnline {
 		return fmt.Errorf("WeChatAccountNotOnline")
 	}
 	// 根据版本来创建一个验证器，主要就是看能不能正确解密
-	var err error
-	a.Validator, err = decrypt.NewValidator(a.Version, a.DataDir)
-	if err != nil {
-		return err
-	}
+	//var err error
+	////a.Validator, err = decrypt.NewValidator(a.Version, a.DataDir)
+	//if err != nil {
+	//	return err
+	//}
 
 	// 先获取userinfo
 	if a.Version == 4 {
-		err = a.GetUserInfoV4(ctx)
-		if err != nil {
-			return err
-		}
-		// if a.Key == "" {
-		// 	err = a.GetKeyV4(ctx)
-		// 	if err != nil {
-		// 		return err
-		// 	}
-		// }
+		logrus.Debug("version =4，接下来去获取xor key和aes key")
+		a.GetImageXorKeyV4()
+		a.GetImageAesKeyV4(context.Background())
+
 	} else if a.Version == 3 {
-		a.GetUserInfoV3(ctx)
-		if a.Key == "" {
-			a.GetKeyV3(ctx)
-		}
+		a.GetUserInfoV3(ctx) // V3版本直接使用偏移就行了，不用遍历内存了
 	}
 	return nil
 }

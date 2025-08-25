@@ -10,8 +10,6 @@ import (
 	"golang.org/x/sys/windows"
 	"golang.org/x/sys/windows/registry"
 
-	"github.com/saucer-man/wxdump/pkg/account"
-	"github.com/saucer-man/wxdump/pkg/process"
 	"github.com/saucer-man/wxdump/pkg/utils"
 )
 
@@ -65,19 +63,17 @@ func getWeChatDir() []string {
 	return wechatRootDir
 }
 
-func GetWexinList() []*account.Account {
-	var accounts []*account.Account
+func GetWexinList() []*Account {
+	var accounts []*Account
 
-	// 获取微信进程列表,将在线的进程转换为账号信息
-	wxDetector := process.NewWxDetector()
-	processes, _ := wxDetector.FindProcesses()
-
+	// 获取微信的进程列表
+	processes, _ := utils.FindWeixinProcesses()
 	for _, proc := range processes {
-
-		a := account.NewAccount(proc)
+		// 将在线的进程转换为账号信息
+		a := NewAccount(proc)
 		logrus.Debug("begin to handle pid:", a)
 
-		err := a.GetUserInfo(context.Background())
+		err := a.GetUserInfo(context.Background()) // 扫描内存
 		if err != nil {
 			logrus.Info("account.GetUserInfo error:", err)
 		}
@@ -103,10 +99,10 @@ func GetWexinList() []*account.Account {
 			if file.Name() == "All Users" || file.Name() == "Applet" || file.Name() == "WMPF" {
 				continue
 			}
-			var a *account.Account
+			var a *Account
 			if utils.Exists(filepath.Join(weChatDir, file.Name(), "Msg", "Misc.db")) {
 				// 判断wxid是否已经在进程里面了
-				a = &account.Account{
+				a = &Account{
 					Wxid:    file.Name(),
 					Version: 3,
 					DataDir: filepath.Join(weChatDir, file.Name()),
@@ -114,8 +110,8 @@ func GetWexinList() []*account.Account {
 				}
 
 			} else if utils.Exists(filepath.Join(weChatDir, file.Name(), "db_storage", "message", "message_0.db")) {
-				a = &account.Account{
-					Wxid:    process.HandleWxidV4(file.Name()),
+				a = &Account{
+					Wxid:    HandleWxidV4(file.Name()),
 					Version: 4,
 					DataDir: filepath.Join(weChatDir, file.Name()),
 					Status:  "offline",
@@ -124,8 +120,8 @@ func GetWexinList() []*account.Account {
 				continue
 			}
 			var isAlreadyProcess bool = false
-			for _, proc := range processes {
-				if proc.Wxid == a.Wxid {
+			for _, acc := range accounts {
+				if acc.Wxid == a.Wxid {
 					isAlreadyProcess = true
 				}
 			}

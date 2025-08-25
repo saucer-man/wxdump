@@ -3,12 +3,8 @@ module github.com/saucer-man/wxdump
 go 1.24.2
 
 require (
-	github.com/git-jiadong/go-lame v0.0.0-20241215065806-397455857191
-	github.com/git-jiadong/go-silk v0.0.0-20241215085148-b8734e30c24b
-	github.com/mattn/go-sqlite3 v1.14.28
 	github.com/shirou/gopsutil/v4 v4.25.3
 	github.com/sirupsen/logrus v1.9.3
-	golang.org/x/crypto v0.37.0
 	golang.org/x/sys v0.32.0
 )
 
