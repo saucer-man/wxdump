@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"sync"
@@ -49,6 +50,8 @@ var (
 	// WeChat v4 related constants
 	V4XorKey byte = 0x37               // Default XOR key for WeChat v4 dat files
 	JpgTail       = []byte{0xFF, 0xD9} // JPG file tail marker
+
+	aesKeyRegex = regexp.MustCompile(`[a-z0-9]{16}`) // 全局预编译正则
 )
 
 // GetImageXorKey scans a directory for "_t.dat" files to calculate and set
@@ -149,7 +152,7 @@ func (a *Account) GetImageAesKeyV4(ctx context.Context) error {
 	// 首先从目录下获取一个aes解密后的.dat文件，获取EncryptedData
 	// Walk the directory to find *.dat files (excluding *_t.dat files)
 	EncryptedData := make([]byte, aes.BlockSize)
-	filepath.Walk(a.DataDir, func(filePath string, info os.FileInfo, err error) error {
+	filepath.Walk(filepath.Join(a.DataDir, "msg", "attach"), func(filePath string, info os.FileInfo, err error) error {
 		if err != nil {
 			return err
 		}
@@ -173,13 +176,16 @@ func (a *Account) GetImageAesKeyV4(ctx context.Context) error {
 		// Check if header matches V4Format2.Header
 		// Get aes.BlockSize (16) bytes starting from position 15
 		if len(data) >= 15+aes.BlockSize && bytes.Equal(data[:4], V4Format2.Header) {
+			logrus.Debugf("get aes verify filePath:%s", filePath)
 			copy(EncryptedData, data[15:15+aes.BlockSize])
 			return filepath.SkipAll // Found what we need, stop walking
 		}
 
 		return nil
 	})
-
+	// EncryptedData, _ = hex.DecodeString("a64a9398b283d8cb")
+	// 方法1：打印为十六进制字符串
+	logrus.Debug("EncryptedData Hex:", hex.EncodeToString(EncryptedData))
 	// Open process handle
 	handle, err := windows.OpenProcess(windows.PROCESS_VM_READ|windows.PROCESS_QUERY_INFORMATION, false, a.PID)
 	if err != nil {
@@ -237,9 +243,6 @@ func (a *Account) GetImageAesKeyV4(ctx context.Context) error {
 		close(resultChannel)
 	}()
 
-	// Wait for result, finalImgKey是图片aes解密的key
-	var finalImgKey string
-
 	for {
 		select {
 		case <-ctx.Done():
@@ -247,10 +250,6 @@ func (a *Account) GetImageAesKeyV4(ctx context.Context) error {
 		case result, ok := <-resultChannel:
 			if !ok {
 				// Channel closed, all workers finished, return whatever keys we found
-
-				if finalImgKey != "" { // 这种情况似乎永远不会出现啊！
-					a.ImageAesKey = finalImgKey
-				}
 				logrus.Info("no valid image aes key")
 				return fmt.Errorf("no valid image aes key")
 			}
@@ -290,7 +289,7 @@ func (a *Account) findMemory(ctx context.Context, handle windows.Handle, memoryC
 		}
 
 		// Skip small memory regions
-		if memInfo.RegionSize < 1024*1024 {
+		if memInfo.RegionSize < 16*1024 {
 			currentAddr += uintptr(memInfo.RegionSize)
 			continue
 		}
@@ -308,7 +307,7 @@ func (a *Account) findMemory(ctx context.Context, handle windows.Handle, memoryC
 			if err = windows.ReadProcessMemory(handle, currentAddr, &memory[0], regionSize, nil); err == nil {
 				select {
 				case memoryChannel <- memory:
-					logrus.Debugf("Memory region for analysis: 0x%X - 0x%X, size: %d bytes", currentAddr, currentAddr+regionSize, regionSize)
+					// logrus.Debugf("Memory region for analysis: 0x%X - 0x%X, size: %d bytes", currentAddr, currentAddr+regionSize, regionSize)
 				case <-ctx.Done():
 					return nil
 				}
@@ -326,18 +325,10 @@ func (a *Account) findMemory(ctx context.Context, handle windows.Handle, memoryC
 // 消费者，消费findMemory生产的数据，然后将结果发送给resultChannel
 func (a *Account) workerV4(ctx context.Context, handle windows.Handle, memoryChannel <-chan []byte, resultChannel chan<- string, EncryptedData []byte) {
 
-	// Define search pattern for V4
-	keyPattern := []byte{
-		0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-		0x20, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-		0x2F, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-	}
-	ptrSize := 8
-	littleEndianFunc := binary.LittleEndian.Uint64
+	// ptrSize := 8
+	// littleEndianFunc := binary.LittleEndian.Uint64
 
-	// Track found keys
-	var imgKey string
-	keysFound := make(map[uint64]bool) // Track processed addresses to avoid duplicates
+	// keysFound := make(map[uint64]bool) // Track processed addresses to avoid duplicates
 
 	for {
 		select {
@@ -345,61 +336,38 @@ func (a *Account) workerV4(ctx context.Context, handle windows.Handle, memoryCha
 			return
 		case memory, ok := <-memoryChannel:
 			if !ok {
-				// Memory scanning complete, return whatever keys we found
-				if imgKey != "" {
-					// 这里直接return不行吗？？？
-					select { // 非阻塞传递数据：如果 resultChannel 已满 / 没人接收，就直接走 default，不会卡死
-					case resultChannel <- imgKey:
-					default:
-					}
-				}
 				return
 			}
 
-			index := len(memory)
-			for {
-				select {
-				case <-ctx.Done():
-					return // Exit if context cancelled
-				default:
-				}
-
-				// Find pattern from end to beginning
-				index = bytes.LastIndex(memory[:index], keyPattern)
-				if index == -1 || index-ptrSize < 0 {
-					break
-				}
-
-				// Extract and validate pointer value
-				ptrValue := littleEndianFunc(memory[index-ptrSize : index])
-				if ptrValue > 0x10000 && ptrValue < 0x7FFFFFFFFFFF {
-					// Skip if we've already processed this address
-					if keysFound[ptrValue] {
-						index -= 1
-						continue
+			matches := aesKeyRegex.FindAll(memory, -1)
+			for _, match := range matches {
+				// match 就是 []byte，长度应该是 16
+				// keyData = []byte("a64a9398b283d8cb")
+				// logrus.Debugf(string(keyData))
+				// Validate key and determine type
+				if ValidateImageAesKeyV4(EncryptedData, match) {
+					logrus.Warn("找到了！！！！")
+					result := string(match)
+					select {
+					case resultChannel <- result:
+					default:
 					}
-					keysFound[ptrValue] = true
-
-					// Validate key and determine type
-					if key, isImgKey := a.validateKey(handle, EncryptedData, ptrValue); key != "" {
-						if isImgKey {
-							if imgKey == "" {
-								imgKey = key
-								logrus.Debug("Image key found: " + key)
-								// Report immediately when found
-								select {
-								// 这里为什么要这么操作，直接将imakey传给resultChannel不就好了吗
-								case resultChannel <- imgKey:
-								default:
-								}
-								return
-							}
-						}
-
-					}
+					return
 				}
-				index -= 1 // Continue searching from previous position
 			}
+			/*
+				for i := 0; i <= len(memory)-16; i++ {
+					keyCandidate := memory[i : i+16]
+					if ValidateImageAesKeyV4(EncryptedData, keyCandidate) {
+						logrus.Warnf("找到 AES key: %s", string(keyCandidate))
+						select {
+						case resultChannel <- string(keyCandidate):
+						default:
+						}
+						return
+					}
+				}*/
+
 		}
 	}
 }
