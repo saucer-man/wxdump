@@ -346,7 +346,7 @@ func (a *Account) workerV4(ctx context.Context, handle windows.Handle, memoryCha
 				// logrus.Debugf(string(keyData))
 				// Validate key and determine type
 				if ValidateImageAesKeyV4(EncryptedData, match) {
-					logrus.Warn("找到了！！！！")
+					// logrus.Warn("找到了！！！！")
 					result := string(match)
 					select {
 					case resultChannel <- result:

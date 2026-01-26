@@ -60,6 +60,12 @@ func getWeChatDir() []string {
 	if utils.Exists(wechatRootDirV4) {
 		wechatRootDir = append(wechatRootDir, wechatRootDirV4)
 	}
+	// 判断C:\Users\xxx\xwechat_files目录是否存在
+	homeDir, _ := os.UserHomeDir()
+	if utils.Exists(filepath.Join(homeDir, "xwechat_files")) {
+		wechatRootDir = append(wechatRootDir, filepath.Join(homeDir, "xwechat_files"))
+	}
+
 	return wechatRootDir
 }
 
@@ -71,7 +77,7 @@ func GetWexinList() []*Account {
 	for _, proc := range processes {
 		// 将在线的进程转换为账号信息
 		a := NewAccount(proc)
-		logrus.Debug("begin to handle pid:", a)
+		logrus.Info("begin to handle pid:", a)
 
 		err := a.GetUserInfo(context.Background()) // 扫描内存
 		if err != nil {
@@ -80,7 +86,6 @@ func GetWexinList() []*Account {
 		accounts = append(accounts, a)
 
 	}
-	return accounts
 
 	// 这里再读取一遍微信的目录，将离线的账号都也加到账号里面
 	for _, weChatDir := range getWeChatDir() {
