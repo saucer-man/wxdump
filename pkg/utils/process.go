@@ -53,7 +53,7 @@ func FindWeixinProcesses() ([]*MyProcess, error) {
 				logrus.Info("get wexin processes Cmdline err:", err)
 				continue
 			}
-			if strings.Contains(cmdline, "--") {
+			if strings.Count(cmdline, "--") > 1 {
 				logrus.Infof("get wexin processes cmdline: %s, pass", cmdline)
 				continue
 			}
