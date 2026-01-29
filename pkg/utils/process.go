@@ -30,9 +30,10 @@ const (
 
 // FindWeixinProcesses 查找所有微信进程并返回它们的信息
 func FindWeixinProcesses() ([]*MyProcess, error) {
+	logrus.Info("try to get wexin processes")
 	processes, err := process.Processes()
 	if err != nil {
-		logrus.Info("获取进程列表失败")
+		logrus.Info("get wexin processes err:", err)
 		return nil, err
 	}
 
@@ -43,16 +44,17 @@ func FindWeixinProcesses() ([]*MyProcess, error) {
 		if err != nil || (name != V3ProcessName && name != V4ProcessName) {
 			continue
 		}
-
+		logrus.Infof("get wexin processes: %d", p.Pid)
 		// v4 存在同名进程，需要继续判断 cmdline
 		// 真正的微信进程是没有参数的，所以把--去掉
 		if name == V4ProcessName {
 			cmdline, err := p.Cmdline()
 			if err != nil {
-				logrus.Info("获取进程命令行失败")
+				logrus.Info("get wexin processes Cmdline err:", err)
 				continue
 			}
 			if strings.Contains(cmdline, "--") {
+				logrus.Infof("get wexin processes cmdline: %s, pass", cmdline)
 				continue
 			}
 		}
@@ -65,17 +67,19 @@ func FindWeixinProcesses() ([]*MyProcess, error) {
 		// 获取exe可执行文件路径
 		exePath, err := p.Exe()
 		if err != nil {
-			logrus.Infof("获取进程 %d 的可执行文件路径信息失败", p.Pid)
+			logrus.Info("get wexin processes Exepath err:", err)
 			continue
 		}
+		logrus.Infof("get wexin processes exePath: %s", exePath)
 		procInfo.ExePath = exePath
 
 		// 获取exe版本信息
 		versionInfo, err := NewAppVer(exePath)
 		if err != nil {
-			logrus.Infof("获取进程 %d 的版本信息失败", p.Pid)
+			logrus.Info("get get wexin processes version err:", err)
 			continue
 		}
+		logrus.Infof("get wexin processes version: %d", versionInfo.Version)
 		procInfo.Version = versionInfo.Version
 		procInfo.FullVersion = versionInfo.FullVersion
 

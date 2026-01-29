@@ -55,17 +55,23 @@ func getWeChatDir() []string {
 	if utils.Exists(wechatRootDirV3) {
 		wechatRootDir = append(wechatRootDir, wechatRootDirV3)
 	}
-	// 判断目录是否存在,判断目录是否存在
+	// 判断v4最正常的目录是否存在,判断目录是否存在
 	wechatRootDirV4 := filepath.Join(wDir, "xwechat_files")
 	if utils.Exists(wechatRootDirV4) {
 		wechatRootDir = append(wechatRootDir, wechatRootDirV4)
 	}
-	// 判断C:\Users\xxx\xwechat_files目录是否存在
+
+	// 判断V4的第一种情况：C:\Users\xxx\xwechat_files目录是否存在
 	homeDir, _ := os.UserHomeDir()
 	if utils.Exists(filepath.Join(homeDir, "xwechat_files")) {
 		wechatRootDir = append(wechatRootDir, filepath.Join(homeDir, "xwechat_files"))
 	}
 
+	// 判断V4的第二种情况: windows.FOLDERID_Documents的上一级
+	if utils.Exists(filepath.Join(filepath.Dir(wDir), "xwechat_files")) {
+		wechatRootDir = append(wechatRootDir, filepath.Join(homeDir, "xwechat_files"))
+	}
+	wechatRootDir = utils.Unique(wechatRootDir)
 	return wechatRootDir
 }
 
@@ -73,7 +79,9 @@ func GetWexinList() []*Account {
 	var accounts []*Account
 
 	// 获取微信的进程列表
+	logrus.Info("try find to weixin processes")
 	processes, _ := utils.FindWeixinProcesses()
+	logrus.Infof("find weixin processes: %v", processes)
 	for _, proc := range processes {
 		// 将在线的进程转换为账号信息
 		a := NewAccount(proc)
@@ -86,10 +94,10 @@ func GetWexinList() []*Account {
 		accounts = append(accounts, a)
 
 	}
-
+	logrus.Info("try find to weixin offlie directory")
 	// 这里再读取一遍微信的目录，将离线的账号都也加到账号里面
 	for _, weChatDir := range getWeChatDir() {
-		logrus.Debugf("try to read wechat dir:%s", weChatDir)
+		logrus.Infof("try to read wechat dir:%s", weChatDir)
 		// 获取微信消息目录下的所有用户目录
 		files, err := os.ReadDir(weChatDir)
 		if err != nil {

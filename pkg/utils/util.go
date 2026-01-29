@@ -23,3 +23,17 @@ func Exists(path string) bool {
 	}
 	return true
 }
+
+// 对列表去重
+func Unique(elements []string) []string {
+	encountered := map[string]struct{}{}
+	result := []string{}
+
+	for _, v := range elements {
+		if _, ok := encountered[v]; !ok {
+			encountered[v] = struct{}{}
+			result = append(result, v)
+		}
+	}
+	return result
+}
