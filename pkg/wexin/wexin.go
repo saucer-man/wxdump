@@ -87,7 +87,7 @@ func GetWexinList() []*Account {
 		a := NewAccount(proc)
 		logrus.Info("begin to handle pid:", a)
 
-		err := a.GetUserInfo(context.Background()) // 扫描内存
+		err := a.GetUserInfo(context.Background()) // 扫描内存,获取key、userinfo、xor key、aes key等等
 		if err != nil {
 			logrus.Info("account.GetUserInfo error:", err)
 		}

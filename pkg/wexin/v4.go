@@ -1,4 +1,4 @@
-// refer:https://github.com/saucer-man/wechat-dump-rs/blob/v4/docs/wechat_4_0_analysis.md
+//go:build windows
 
 package wexin
 
@@ -372,21 +372,6 @@ func (a *Account) workerV4(ctx context.Context, handle windows.Handle, memoryCha
 	}
 }
 
-// validateKey validates a single key candidate and returns the key and whether it's an image key
-func (a *Account) validateKey(handle windows.Handle, EncryptedData []byte, addr uint64) (string, bool) {
-	keyData := make([]byte, 0x20) // 32-byte key
-	if err := windows.ReadProcessMemory(handle, uintptr(addr), &keyData[0], uintptr(len(keyData)), nil); err != nil {
-		return "", false
-	}
-
-	//  check if it's a valid image key
-	if ValidateImageAesKeyV4(EncryptedData, keyData) {
-		return hex.EncodeToString(keyData[:16]), true // Image key
-	}
-
-	return "", false
-}
-
 // 判断key是否是aes key，解密EncryptedData后，开头是JPG或者WXGF即可
 func ValidateImageAesKeyV4(EncryptedData, key []byte) bool {
 	if len(key) < 16 {
@@ -403,4 +388,142 @@ func ValidateImageAesKeyV4(EncryptedData, key []byte) bool {
 	cipher.Decrypt(decrypted, EncryptedData)
 
 	return bytes.HasPrefix(decrypted, JPG.Header) || bytes.HasPrefix(decrypted, WXGF.Header)
+}
+
+const (
+	PROCESS_QUERY_INFORMATION = 0x0400
+	PROCESS_VM_READ           = 0x0010
+	MEM_COMMIT                = 0x1000
+	PAGE_READONLY             = 0x02
+	PAGE_READWRITE            = 0x04
+	PAGE_EXECUTE_READ         = 0x20
+	PAGE_EXECUTE_READWRITE    = 0x40
+)
+
+// 通用特征码：设备类型字符串
+var devicePatterns = [][]byte{
+	[]byte("android\x00"),
+	[]byte("iphone\x00"),
+	[]byte("ipad\x00"),
+}
+
+// 按顺序匹配：account、nickname、phone
+var userBlockRe = regexp.MustCompile(
+	`([\x20-\x7e]+)\x00+[\x00-\xff]{16}([\x20-\x7e]+)\x00+[\x00-\xff]{16}(1[3-9]\d{9})\x00`,
+)
+
+type userInfo struct {
+	Account  string
+	Nickname string
+	Phones   string
+}
+
+func parseUserBlock(handle windows.Handle, deviceAddr uintptr) *userInfo {
+	start := deviceAddr - 0x280
+	buf := make([]byte, 0x290)
+	err := windows.ReadProcessMemory(handle, start, &buf[0], uintptr(len(buf)), nil)
+	if err != nil {
+		return nil
+	}
+	loc := userBlockRe.FindSubmatch(buf)
+	if loc == nil || len(loc) != 4 {
+		return nil
+	}
+	account := strings.TrimSpace(string(loc[1]))
+	nickname := strings.TrimSpace(string(loc[2]))
+	phone := strings.TrimSpace(string(loc[3]))
+	if account == "" || nickname == "" || phone == "" {
+		return nil
+	}
+	if phone == account || phone == nickname {
+		return nil
+	}
+	return &userInfo{Account: account, Nickname: nickname, Phones: phone}
+}
+
+func patternScanAll(handle windows.Handle, pattern []byte) []uintptr {
+	var addrs []uintptr
+	addr := uintptr(0)
+	userLimit := uintptr(0x7FFFFFFF0000)
+	// 从地址 0 开始，一直到 0x7FFFFFFF0000（64 位 Windows 用户空间上界），按区域遍历
+	for addr < userLimit {
+		// 用 VirtualQueryEx 查询当前地址所在内存区域的信息，包括：
+		// BaseAddress：区域起始地址
+		// RegionSize：区域大小
+		// State：是否已提交（MEM_COMMIT）
+		// Protect：保护属性（可读、可写、可执行等）
+		var mbi windows.MemoryBasicInformation
+		err := windows.VirtualQueryEx(handle, addr, &mbi, unsafe.Sizeof(mbi))
+		if err != nil {
+			break
+		}
+		// 只处理满足以下条件的区域：
+		// State == MEM_COMMIT：已提交
+		// Protect 为可读（只读、读写、可执行读、可执行读写）
+		// RegionSize > 0
+		readable := mbi.Protect == PAGE_READONLY || mbi.Protect == PAGE_READWRITE ||
+			mbi.Protect == PAGE_EXECUTE_READ || mbi.Protect == PAGE_EXECUTE_READWRITE
+		if mbi.State == MEM_COMMIT && readable && mbi.RegionSize > 0 {
+			// 读取当前区域内存，如果读取成功，则继续处理
+			buf := make([]byte, mbi.RegionSize)
+			err := windows.ReadProcessMemory(handle, mbi.BaseAddress, &buf[0], mbi.RegionSize, nil)
+			if err == nil && uintptr(len(buf)) >= uintptr(len(pattern)) {
+				// 在读取的内存中，查找特征码
+				idx := 0
+				for {
+					i := bytes.Index(buf[idx:], pattern)
+					if i < 0 {
+						break
+					}
+					// 将找到的特征码地址添加到结果列表中
+					addrs = append(addrs, mbi.BaseAddress+uintptr(idx+i))
+					idx += i + 1
+				}
+			}
+		}
+		// 移动到下一个区域
+		addr = mbi.BaseAddress + mbi.RegionSize
+	}
+	// 返回找到的特征码地址列表
+	return addrs
+}
+
+// 尝试从内存中找到手机号、账号等信息
+// 内存布局：account账号、nickname昵称、手机号（按顺序）
+func (a *Account) GetUserInfoV4() error {
+	handle, err := windows.OpenProcess(PROCESS_QUERY_INFORMATION|PROCESS_VM_READ, false, uint32(a.PID))
+	if err != nil {
+		return fmt.Errorf("无法打开进程: %v", err)
+	}
+	defer windows.CloseHandle(handle)
+
+	var addrs []uintptr
+	for _, pat := range devicePatterns {
+		addrs = patternScanAll(handle, pat)
+		if len(addrs) > 0 {
+			logrus.Infof("[*] 使用通用特征码: %q\n", string(pat))
+			break
+		}
+	}
+
+	if len(addrs) == 0 {
+		return fmt.Errorf("未找到特征码")
+	}
+
+	for _, addr := range addrs {
+		info := parseUserBlock(handle, addr)
+		if info == nil {
+			continue
+		}
+		if info.Phones == "" {
+			continue
+		}
+		a.WxAccount = info.Account
+		a.Nickname = info.Nickname
+		a.Phone = info.Phones
+		logrus.Infof("get userinfo: account=%s nickname=%s phones=%s\n",
+			a.WxAccount, a.Nickname, a.Phone)
+		return nil
+	}
+	return fmt.Errorf("未解析到用户信息，可能是结构变化")
 }

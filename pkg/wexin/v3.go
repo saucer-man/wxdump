@@ -1,7 +1,6 @@
 package wexin
 
 import (
-	"context"
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
@@ -492,7 +491,7 @@ const (
 	V3ModuleName = "WeChatWin.dll"
 )
 
-func (a *Account) GetUserInfoV3(ctx context.Context) error {
+func (a *Account) GetUserInfoV3() error {
 	// 首先判断版本号是否已经收集
 	if _, ok := OffSetMap[a.FullVersion]; !ok {
 		logrus.Info("version no support to get userinfo")

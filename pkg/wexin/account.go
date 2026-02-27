@@ -46,16 +46,17 @@ type Account struct {
 	ZipPath     string
 }
 
-// 微信4的目录名不是wxid，而是 wxid_xxxxx_786d == > wxid_xxxxx
+// 微信4的目录名不是wxid，而是 wxid_xxxxx_786d == > wxid_xxxxx，多个下划线也只保留一个
 func HandleWxidV4(wxid string) string {
-
-	// 找到最后一个下划线的位置
-	idx := strings.LastIndex(wxid, "_")
-	if idx != -1 {
-		wxid = wxid[:idx] // 截取到最后一个下划线之前
+	if strings.Count(wxid, "_") < 2 {
+		return wxid
 	}
-	return wxid
-
+	first := strings.Index(wxid, "_")
+	second := strings.Index(wxid[first+1:], "_")
+	if second == -1 {
+		return wxid
+	}
+	return wxid[:first+1+second]
 }
 
 // NewAccount 创建新的账号对象
@@ -110,7 +111,7 @@ func (a *Account) initializeProcessInfo(proc *utils.MyProcess) error {
 	return nil
 }
 
-// GetKey 获取账号的密钥
+// GetUserInfo 获取账号的身份信息，如果是v3的话，还会获取密钥
 func (a *Account) GetUserInfo(ctx context.Context) error {
 	// 如果已经有密钥，直接返回
 	if a.Key != "" {
@@ -130,12 +131,13 @@ func (a *Account) GetUserInfo(ctx context.Context) error {
 
 	// 先获取userinfo
 	if a.Version == 4 {
-		logrus.Debug("version =4，接下来去获取xor key和aes key")
+		logrus.Debug("version =4，接下来去获取userinfo、xor key和aes key")
+		a.GetUserInfoV4()
 		a.GetImageXorKeyV4()
 		a.GetImageAesKeyV4(context.Background())
 
 	} else if a.Version == 3 {
-		a.GetUserInfoV3(ctx) // V3版本直接使用偏移就行了，不用遍历内存了
+		a.GetUserInfoV3() // V3版本直接使用偏移就行了，不用遍历内存了
 	}
 	return nil
 }
