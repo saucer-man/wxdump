@@ -492,6 +492,16 @@ const (
 )
 
 func (a *Account) GetUserInfoV3() error {
+	// 如果已经有密钥，直接返回
+	if a.Key != "" {
+		return nil
+	}
+
+	// 检查账号状态
+	if a.Status != StatusOnline {
+		return fmt.Errorf("WeChatAccountNotOnline")
+	}
+
 	// 首先判断版本号是否已经收集
 	if _, ok := OffSetMap[a.FullVersion]; !ok {
 		logrus.Info("version no support to get userinfo")

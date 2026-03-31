@@ -2,13 +2,11 @@ package wexin
 
 import (
 	"archive/zip"
-	"context"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"strings"
-	"time"
 
 	"github.com/saucer-man/wxdump/pkg/utils"
 
@@ -38,6 +36,7 @@ type Account struct {
 	FullVersion string
 	DataDir     string
 	Key         string
+	KeyV4       map[string]interface{} // v4每一个db都对应了一个derived Key 和 Salt
 	ImageXorKey string
 	ImageAesKey string
 	PID         uint32
@@ -111,70 +110,56 @@ func (a *Account) initializeProcessInfo(proc *utils.MyProcess) error {
 	return nil
 }
 
-// GetUserInfo 获取账号的身份信息，如果是v3的话，还会获取密钥
-func (a *Account) GetUserInfo(ctx context.Context) error {
-	// 如果已经有密钥，直接返回
-	if a.Key != "" {
+// ZipWeChatUserData 压缩微信用户数据
+func (a *Account) ZipWeChatUserData(savePath string) error {
+	// 如果不确定，检查数据库修改时间
+	// if !isSure {
+	// 	var dbPath string
+	// 	// 根据微信版本决定数据库路径
+	// 	if a.Version == 4 {
+	// 		// 版本4的数据库路径
+	// 		dbPath = filepath.Join(a.DataDir, "db_storage", "session", "session.db")
+	// 	} else {
+	// 		// v3版本的数据库路径
+	// 		dbPath = filepath.Join(a.DataDir, "Msg", "MicroMsg.db")
+	// 	}
+
+	// 	// 获取数据库文件信息
+	// 	fileInfo, err := os.Stat(dbPath)
+	// 	if err != nil {
+	// 		// 获取文件信息失败时返回错误
+	// 		return fmt.Errorf("failed to get database info: %v", err)
+	// 	}
+
+	// 	// 获取文件最后修改时间
+	// 	modTime := fileInfo.ModTime()
+	// 	// 计算距离当前时间的天数差
+	// 	daysDiff := time.Since(modTime).Hours() / 24
+	// 	logrus.Debugf("db daysDiff:%.1f days", daysDiff)
+
+	// 	if daysDiff > 30 {
+	// 		// 如果超过30天，返回错误
+	// 		logrus.Infof("database file is too old (%.1f days)", daysDiff)
+	// 		return nil
+	// 	}
+
+	// }
+
+	// Determine which subdirectory to traverse based on version
+	if a.Version != 4 {
 		return nil
 	}
-
-	// 检查账号状态
-	if a.Status != StatusOnline {
-		return fmt.Errorf("WeChatAccountNotOnline")
+	if a.KeyV4 == nil {
+		return fmt.Errorf("KeyV4 is empty, call GetKeyV4() first")
 	}
-	// 根据版本来创建一个验证器，主要就是看能不能正确解密
-	//var err error
-	////a.Validator, err = decrypt.NewValidator(a.Version, a.DataDir)
-	//if err != nil {
-	//	return err
-	//}
-
-	// 先获取userinfo
-	if a.Version == 4 {
-		logrus.Debug("version =4，接下来去获取userinfo、xor key和aes key")
-		a.GetUserInfoV4()
-		a.GetImageXorKeyV4()
-		a.GetImageAesKeyV4(context.Background())
-
-	} else if a.Version == 3 {
-		a.GetUserInfoV3() // V3版本直接使用偏移就行了，不用遍历内存了
+	targetDir, err := os.MkdirTemp("", "wx_v4_decrypt_*")
+	if err != nil {
+		return fmt.Errorf("failed to create temp dir: %v", err)
 	}
-	return nil
-}
+	defer os.RemoveAll(targetDir)
 
-// ZipWeChatUserData 压缩微信用户数据
-func (a *Account) ZipWeChatUserData(savePath string, isSure bool) error {
-	// 如果不确定，检查数据库修改时间
-	if !isSure {
-		var dbPath string
-		// 根据微信版本决定数据库路径
-		if a.Version == 4 {
-			// 版本4的数据库路径
-			dbPath = filepath.Join(a.DataDir, "db_storage", "session", "session.db")
-		} else {
-			// v3版本的数据库路径
-			dbPath = filepath.Join(a.DataDir, "Msg", "MicroMsg.db")
-		}
-
-		// 获取数据库文件信息
-		fileInfo, err := os.Stat(dbPath)
-		if err != nil {
-			// 获取文件信息失败时返回错误
-			return fmt.Errorf("failed to get database info: %v", err)
-		}
-
-		// 获取文件最后修改时间
-		modTime := fileInfo.ModTime()
-		// 计算距离当前时间的天数差
-		daysDiff := time.Since(modTime).Hours() / 24
-		logrus.Debugf("db daysDiff:%.1f days", daysDiff)
-
-		if daysDiff > 30 {
-			// 如果超过30天，返回错误
-			logrus.Infof("database file is too old (%.1f days)", daysDiff)
-			return nil
-		}
-
+	if err := a.DecryptDBV4(targetDir); err != nil {
+		return fmt.Errorf("failed to decrypt v4 db: %v", err)
 	}
 
 	// 创建zip文件
@@ -187,14 +172,6 @@ func (a *Account) ZipWeChatUserData(savePath string, isSure bool) error {
 
 	zipWriter := zip.NewWriter(zipFile)
 	defer zipWriter.Close()
-
-	// Determine which subdirectory to traverse based on version
-	var targetDir string
-	if a.Version == 4 {
-		targetDir = filepath.Join(a.DataDir, "db_storage")
-	} else {
-		targetDir = filepath.Join(a.DataDir, "Msg")
-	}
 
 	// Walk through the appropriate directory
 	err = filepath.Walk(targetDir, func(path string, info os.FileInfo, err error) error {

@@ -1,11 +1,11 @@
 module github.com/saucer-man/wxdump
 
-go 1.24.2
+go 1.25.0
 
 require (
 	github.com/shirou/gopsutil/v4 v4.25.3
 	github.com/sirupsen/logrus v1.9.3
-	golang.org/x/sys v0.32.0
+	golang.org/x/sys v0.42.0
 )
 
 require (
@@ -16,4 +16,5 @@ require (
 	github.com/tklauser/go-sysconf v0.3.15 // indirect
 	github.com/tklauser/numcpus v0.10.0 // indirect
 	github.com/yusufpapurcu/wmi v1.2.4 // indirect
+	golang.org/x/crypto v0.49.0 // indirect
 )

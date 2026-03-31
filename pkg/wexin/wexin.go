@@ -1,7 +1,6 @@
 package wexin
 
 import (
-	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -86,10 +85,21 @@ func GetWexinList() []*Account {
 		// 将在线的进程转换为账号信息
 		a := NewAccount(proc)
 		logrus.Info("begin to handle pid:", a)
-
-		err := a.GetUserInfo(context.Background()) // 扫描内存,获取key、userinfo、xor key、aes key等等
-		if err != nil {
-			logrus.Info("account.GetUserInfo error:", err)
+		if a.Version == 3 {
+			err := a.GetUserInfoV3() // V3版本直接使用偏移，获取key、userinfo、xor key、aes key等等
+			if err != nil {
+				logrus.Info("account.GetUserInfoV3 error:", err)
+			}
+		}
+		if a.Version == 4 {
+			err := a.GetUserInfoV4() // V4版本扫描内存，获取key、userinfo、xor key、aes key等等
+			if err != nil {
+				logrus.Info("account.GetUserInfoV4 error:", err)
+			}
+			err = a.GetKeyV4()
+			if err != nil {
+				logrus.Info("account.GetKeyV4 error:", err)
+			}
 		}
 		accounts = append(accounts, a)
 
